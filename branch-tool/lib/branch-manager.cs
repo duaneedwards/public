@@ -410,21 +410,23 @@ int RunCleanupMerged(BranchConfig config, List<WorkingCopyInfo> mergedCopies)
     }
 
     // Let user select which to delete
+    var deleteChoices = mergedCopies.Select(wc =>
+    {
+        var warning = wc.Status != "clean" ? " [yellow](has changes)[/]" : "";
+        return $"{wc.FolderName}{warning}";
+    }).ToList();
+    deleteChoices.Add("← Back");
+
     var toDelete = AnsiConsole.Prompt(
         new MultiSelectionPrompt<string>()
             .Title("Select working copies to delete:")
             .PageSize(15)
             .InstructionsText("[grey](Press [blue]<space>[/] to toggle, [green]<enter>[/] to confirm)[/]")
-            .AddChoices(mergedCopies.Select(wc =>
-            {
-                var warning = wc.Status != "clean" ? " [yellow](has changes)[/]" : "";
-                return $"{wc.FolderName}{warning}";
-            })));
+            .AddChoices(deleteChoices));
 
-    if (toDelete.Count == 0)
+    if (toDelete.Contains("← Back") || toDelete.Count == 0)
     {
-        AnsiConsole.MarkupLine("[grey]No working copies selected. Nothing deleted.[/]");
-        return 0;
+        return RunInteractive(config);
     }
 
     AnsiConsole.WriteLine();
@@ -433,7 +435,7 @@ int RunCleanupMerged(BranchConfig config, List<WorkingCopyInfo> mergedCopies)
     if (!AnsiConsole.Confirm("Are you sure?", false))
     {
         AnsiConsole.MarkupLine("[grey]Cancelled.[/]");
-        return 0;
+        return RunInteractive(config);
     }
 
     // Delete selected folders
@@ -624,15 +626,30 @@ int RunCreateBranchInteractiveMenu(BranchConfig config)
     }
 
     // Select repository
+    var choices = config.Repositories.Select(r => $"{r.ShortName} ({r.DisplayName})").ToList();
+    choices.Add("← Back");
+
     var repoChoice = AnsiConsole.Prompt(
         new SelectionPrompt<string>()
             .Title("Select repository:")
-            .AddChoices(config.Repositories.Select(r => $"{r.ShortName} ({r.DisplayName})")));
+            .AddChoices(choices));
+
+    if (repoChoice == "← Back")
+    {
+        return RunInteractive(config);
+    }
 
     var shortName = repoChoice.Split(' ')[0];
 
     // Get branch name
-    var branch = AnsiConsole.Ask<string>("Branch name (e.g., feature/my-feature):");
+    var branch = AnsiConsole.Prompt(
+        new TextPrompt<string>("Branch name (e.g., feature/my-feature):")
+            .AllowEmpty());
+
+    if (string.IsNullOrWhiteSpace(branch))
+    {
+        return RunInteractive(config);
+    }
 
     return RunCreateBranch(config, shortName, branch);
 }
