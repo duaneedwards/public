@@ -1,0 +1,26 @@
+{
+  "settings": {
+    "rootFolder": {
+      "macos": "/Users/you/code",
+      "windows": "D:\\Code",
+      "linux": "/home/you/code"
+    },
+    "defaultTerminal": "warp"
+  },
+  "repositories": [
+    {
+      "shortName": "my-project",
+      "url": "https://github.com/your-org/my-project",
+      "displayName": "your-org/my-project",
+      "defaultBranch": "main",
+      "cloneSource": "auto"
+    },
+    {
+      "shortName": "another-repo",
+      "url": "https://github.com/your-org/another-repo",
+      "displayName": "your-org/another-repo",
+      "defaultBranch": "master",
+      "cloneSource": "auto"
+    }
+  ]
+}
