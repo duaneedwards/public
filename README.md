@@ -18,6 +18,18 @@ A cross-platform CLI tool for managing git working copies. Quickly spin up isola
 
 [View documentation](./branch-tool/README.md)
 
+### [statusline-tool](./statusline-tool/)
+
+A custom statusline script that displays useful context at a glance: context window remaining %, current folder, git branch, and sync status.
+
+**Features:**
+- Color-coded context percentage (green/yellow/red based on remaining)
+- Git branch with remote sync status (ahead/behind counts)
+- Detects branch mismatches, detached HEAD, missing remotes
+- Lightweight bash script with jq dependency
+
+[View documentation](./statusline-tool/README.md)
+
 ## Installation
 
 Each tool has its own installation instructions. Generally, you'll copy files to your `~/.claude/` directory structure:
