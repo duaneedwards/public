@@ -187,8 +187,8 @@ int RunInteractive(BranchConfig config)
 
         table.AddRow(
             $"[grey]{i + 1}[/]",
-            $"[{folderStyle}]{TruncateString(wc.FolderName, 28)}[/]",
-            TruncateString(wc.Branch, 26),
+            $"[{folderStyle}]{wc.FolderName}[/]",
+            wc.Branch,
             $"[{statusColor}]{wc.Status}[/]",
             $"[grey]{wc.RelativeTime}[/]",
             remoteStatus
