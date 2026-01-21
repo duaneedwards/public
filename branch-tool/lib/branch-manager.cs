@@ -167,6 +167,7 @@ int RunInteractive(BranchConfig config)
 
     // Show table of working copies
     var table = new Table();
+    table.Expand();
     table.Border(TableBorder.Rounded);
     table.AddColumn(new TableColumn("#").Centered());
     table.AddColumn("Folder");
@@ -389,6 +390,7 @@ int RunCleanupMerged(BranchConfig config, List<WorkingCopyInfo> mergedCopies)
     AnsiConsole.WriteLine();
 
     var table = new Table();
+    table.Expand();
     table.Border(TableBorder.Rounded);
     table.AddColumn("Folder");
     table.AddColumn("Branch");
@@ -877,6 +879,7 @@ int RunList(BranchConfig config, string[] args)
         .ToList();
 
     var table = new Table();
+    table.Expand();
     table.AddColumn("Folder");
     table.AddColumn("Branch");
     table.AddColumn("Status");
@@ -953,6 +956,7 @@ int RunConfig(BranchConfig config)
         if (config.Repositories != null && config.Repositories.Count > 0)
         {
             var table = new Table();
+            table.Expand();
             table.AddColumn("Short Name");
             table.AddColumn("Display Name");
             table.AddColumn("Default Branch");
