@@ -26,9 +26,9 @@ using Spectre.Console;
 //   dotnet run branch-manager.cs config               # Configure repositories
 //
 // Examples:
-//   dotnet run branch-manager.cs my-project feature/phase-4-1-api
+//   dotnet run branch-manager.cs voyager feature/phase-4-1-api
 //   dotnet run branch-manager.cs list
-//   dotnet run branch-manager.cs list my-project
+//   dotnet run branch-manager.cs list voyager
 //   dotnet run branch-manager.cs config
 // ============================================================================
 
@@ -143,7 +143,7 @@ int RunInteractive(BranchConfig config)
     AnsiConsole.WriteLine();
 
     // Get working copies with remote status check
-    var workingCopies = GetWorkingCopies(config, rootFolder, checkRemotes: true);
+    var workingCopies = GetWorkingCopies(rootFolder, checkRemotes: true);
 
     if (workingCopies.Count == 0)
     {
@@ -204,60 +204,60 @@ int RunInteractive(BranchConfig config)
         AnsiConsole.WriteLine();
     }
 
-    // Build selection choices - working copies first, then actions
-    var choices = new List<string>();
-    foreach (var wc in workingCopies)
-    {
-        var suffix = wc.IsMerged ? " (merged)" : "";
-        choices.Add($"{wc.FolderName}{suffix}");
-    }
-    choices.Add("─────────────────────────────────────");
-    choices.Add("+ Create new working copy");
-    if (mergedCount > 0)
-    {
-        choices.Add($"~ Clean up {mergedCount} merged branch{(mergedCount == 1 ? "" : "es")}");
-    }
-    choices.Add("* Configure");
-    choices.Add("x Exit");
+    // Show keyboard shortcuts prompt
+    var maxNum = Math.Min(workingCopies.Count, 9);
+    var numRange = maxNum > 0 ? $"[cyan]1-{maxNum}[/] Open  " : "";
+    var cleanupOption = mergedCount > 0 ? "[cyan]c[/] Cleanup  " : "";
 
-    var selection = AnsiConsole.Prompt(
-        new SelectionPrompt<string>()
-            .Title("Select working copy to open:")
-            .PageSize(15)
-            .HighlightStyle(new Style(Color.Cyan1))
-            .AddChoices(choices));
+    AnsiConsole.Markup($"{numRange}[cyan]n[/] New  {cleanupOption}[cyan]s[/] Settings  [cyan]x[/] Exit: ");
 
-    // Handle selection
-    if (selection.StartsWith("+ "))
+    // Read single key
+    while (true)
     {
-        return RunCreateBranchInteractiveMenu(config);
-    }
-    else if (selection.StartsWith("~ "))
-    {
-        return RunCleanupMerged(config, workingCopies.Where(wc => wc.IsMerged).ToList());
-    }
-    else if (selection.StartsWith("* "))
-    {
-        return RunConfig(config);
-    }
-    else if (selection.StartsWith("x ") || selection.StartsWith("───"))
-    {
-        return 0;
-    }
-    else
-    {
-        // Find the selected working copy and open it (strip " (merged)" suffix if present)
-        var folderName = selection.Replace(" (merged)", "");
-        var selected = workingCopies.FirstOrDefault(wc => wc.FolderName == folderName);
-        if (selected != null)
+        var key = Console.ReadKey(true);
+        var keyChar = char.ToLower(key.KeyChar);
+
+        // Handle number keys 1-9
+        if (keyChar >= '1' && keyChar <= '9')
         {
-            OpenTerminal(selected.FullPath, config.Settings?.DefaultTerminal ?? "warp");
+            var index = keyChar - '1';
+            if (index < workingCopies.Count)
+            {
+                AnsiConsole.WriteLine(keyChar.ToString());
+                var selected = workingCopies[index];
+                OpenTerminal(selected.FullPath, config.Settings?.DefaultTerminal ?? "warp");
+                return 0;
+            }
         }
-        return 0;
+
+        // Handle letter shortcuts
+        switch (keyChar)
+        {
+            case 'n':
+                AnsiConsole.WriteLine("n");
+                return RunCreateBranchInteractiveMenu(config);
+            case 'c' when mergedCount > 0:
+                AnsiConsole.WriteLine("c");
+                return RunCleanupMerged(config, workingCopies.Where(wc => wc.IsMerged).ToList());
+            case 's':
+                AnsiConsole.WriteLine("s");
+                return RunConfig(config);
+            case 'x':
+            case 'q':
+                AnsiConsole.WriteLine(keyChar.ToString());
+                return 0;
+        }
+
+        // Handle Escape key
+        if (key.Key == ConsoleKey.Escape)
+        {
+            AnsiConsole.WriteLine();
+            return 0;
+        }
     }
 }
 
-List<WorkingCopyInfo> GetWorkingCopies(BranchConfig config, string rootFolder, bool checkRemotes = false)
+List<WorkingCopyInfo> GetWorkingCopies(string rootFolder, bool checkRemotes = false)
 {
     var workingCopies = new List<WorkingCopyInfo>();
 
@@ -269,25 +269,11 @@ List<WorkingCopyInfo> GetWorkingCopies(BranchConfig config, string rootFolder, b
         .OrderByDescending(d => d.LastWriteTime)
         .ToList();
 
-    // Build main repo names from configured repositories
-    // These are the "base" folders that are not working copies
-    var mainRepoNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-    if (config.Repositories != null)
+    // Known main repo names (simple folder names that are main repos, not working copies)
+    var mainRepoNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
-        foreach (var repo in config.Repositories)
-        {
-            if (!string.IsNullOrEmpty(repo.ShortName))
-            {
-                mainRepoNames.Add(repo.ShortName);
-            }
-            // Also add the repo name from displayName (e.g., "org/repo" -> "repo")
-            if (!string.IsNullOrEmpty(repo.DisplayName))
-            {
-                var repoName = repo.DisplayName.Split('/').Last();
-                mainRepoNames.Add(repoName);
-            }
-        }
-    }
+        "voyager", "profile", "lifebase" // Add more as needed
+    };
 
     foreach (var dir in directories)
     {
@@ -349,7 +335,7 @@ List<WorkingCopyInfo> GetWorkingCopies(BranchConfig config, string rootFolder, b
 string DeriveExpectedBranch(string folderName, HashSet<string> repoNames)
 {
     // Try to extract branch name from folder name
-    // e.g., "my-project-phase-4-1-3-2-manifest-editor" -> "feature/phase-4-1-3-2-manifest-editor"
+    // e.g., "voyager-phase-4-1-3-2-manifest-editor" -> "feature/phase-4-1-3-2-manifest-editor"
 
     foreach (var repoName in repoNames)
     {
@@ -563,7 +549,7 @@ int RunOnboarding(BranchConfig config)
     // Step 4: Get default branch
     var defaultBranch = AnsiConsole.Prompt(
         new TextPrompt<string>("Default branch:")
-            .DefaultValue("main"));
+            .DefaultValue("master"));
 
     // Create repository entry
     config.Repositories ??= new List<Repository>();
@@ -718,7 +704,7 @@ int RunCreateBranch(BranchConfig config, string shortName, string branch)
             RunGit("fetch origin", targetPath);
 
             // Checkout default branch first
-            RunGit($"checkout {repo.DefaultBranch ?? "main"}", targetPath);
+            RunGit($"checkout {repo.DefaultBranch ?? "master"}", targetPath);
 
             // Create and checkout new branch
             // Check if branch exists on remote
@@ -967,7 +953,7 @@ int RunConfig(BranchConfig config)
                 table.AddRow(
                     $"[cyan]{repo.ShortName}[/]",
                     repo.DisplayName ?? "",
-                    repo.DefaultBranch ?? "main",
+                    repo.DefaultBranch ?? "master",
                     repo.CloneSource ?? "auto"
                 );
             }
@@ -1033,7 +1019,7 @@ void AddRepository(BranchConfig config)
 
     var defaultBranch = AnsiConsole.Prompt(
         new TextPrompt<string>("Default branch:")
-            .DefaultValue("main"));
+            .DefaultValue("master"));
 
     var cloneSource = AnsiConsole.Prompt(
         new SelectionPrompt<string>()
@@ -1549,9 +1535,9 @@ int ShowHelp()
     Console.WriteLine("  branch help                   Show this help");
     AnsiConsole.WriteLine();
     AnsiConsole.MarkupLine("[bold]Examples:[/]");
-    AnsiConsole.MarkupLine("  branch my-project feature/phase-4-1-api");
+    AnsiConsole.MarkupLine("  branch voyager feature/phase-4-1-api");
     AnsiConsole.MarkupLine("  branch list");
-    AnsiConsole.MarkupLine("  branch list my-project");
+    AnsiConsole.MarkupLine("  branch list voyager");
     AnsiConsole.WriteLine();
     AnsiConsole.MarkupLine($"[grey]Config file: {configPath}[/]");
 
@@ -1607,6 +1593,6 @@ class WorkingCopyInfo
     public DateTime LastModified { get; set; }
     public string RelativeTime { get; set; } = "";
     public bool RemoteBranchExists { get; set; } = true;
-    public bool IsMainRepo { get; set; } = false; // True for main repo folders, not working copies
+    public bool IsMainRepo { get; set; } = false; // True for 'voyager', 'profile', etc.
     public bool IsMerged => !RemoteBranchExists && !IsMainRepo;
 }
