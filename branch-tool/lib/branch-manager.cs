@@ -225,7 +225,7 @@ int RunInteractive(BranchConfig config)
             {
                 AnsiConsole.WriteLine(keyChar.ToString());
                 var selected = workingCopies[index];
-                OpenTerminal(selected.FullPath, config.Settings?.DefaultTerminal ?? "warp");
+                OpenTerminal(selected.FullPath, config.Settings?.DefaultTerminal ?? "warp", "tab");
                 return 0;
             }
         }
@@ -750,9 +750,19 @@ int RunCreateBranch(BranchConfig config, string shortName, string branch)
     AnsiConsole.WriteLine();
 
     // Prompt to open terminal
-    if (AnsiConsole.Confirm("Open in Warp terminal?", true))
+    var terminal = config.Settings?.DefaultTerminal ?? "warp";
+    var openChoice = AnsiConsole.Prompt(
+        new SelectionPrompt<string>()
+            .Title("Open terminal?")
+            .AddChoices("Open in new tab (Recommended)", "Open in new window", "Don't open"));
+
+    if (openChoice.StartsWith("Open in new tab"))
     {
-        OpenTerminal(targetPath, config.Settings?.DefaultTerminal ?? "warp");
+        OpenTerminal(targetPath, terminal, "tab");
+    }
+    else if (openChoice.StartsWith("Open in new window"))
+    {
+        OpenTerminal(targetPath, terminal, "window");
     }
 
     return 0;
@@ -777,7 +787,7 @@ int HandleExistingFolder(BranchConfig config, Repository repo, string branch, st
         if (choice == "Abort")
             return 1;
 
-        OpenTerminal(targetPath, config.Settings?.DefaultTerminal ?? "warp");
+        OpenTerminal(targetPath, config.Settings?.DefaultTerminal ?? "warp", "tab");
         return 0;
     }
 
@@ -802,24 +812,25 @@ int HandleExistingFolder(BranchConfig config, Repository repo, string branch, st
     var action = AnsiConsole.Prompt(
         new SelectionPrompt<string>()
             .Title("What would you like to do?")
-            .AddChoices("Open in terminal", "Switch to requested branch", "Delete and recreate", "Abort"));
+            .AddChoices("Open in new tab", "Open in new window", "Switch to requested branch", "Delete and recreate", "Abort"));
 
     return action switch
     {
-        "Open in terminal" => OpenTerminalAndReturn(targetPath, config.Settings?.DefaultTerminal ?? "warp"),
+        "Open in new tab" => OpenTerminalAndReturn(targetPath, config.Settings?.DefaultTerminal ?? "warp", "tab"),
+        "Open in new window" => OpenTerminalAndReturn(targetPath, config.Settings?.DefaultTerminal ?? "warp", "window"),
         "Switch to requested branch" => SwitchBranchAndOpen(targetPath, branch, config.Settings?.DefaultTerminal ?? "warp"),
         "Delete and recreate" => DeleteAndRecreate(config, repo, branch, targetPath),
         _ => 1
     };
 }
 
-int OpenTerminalAndReturn(string path, string terminal)
+int OpenTerminalAndReturn(string path, string terminal, string warpMode = "tab")
 {
-    OpenTerminal(path, terminal);
+    OpenTerminal(path, terminal, warpMode);
     return 0;
 }
 
-int SwitchBranchAndOpen(string path, string branch, string terminal)
+int SwitchBranchAndOpen(string path, string branch, string terminal, string warpMode = "tab")
 {
     AnsiConsole.Status()
         .Spinner(Spinner.Known.Dots)
@@ -837,7 +848,7 @@ int SwitchBranchAndOpen(string path, string branch, string terminal)
         });
 
     AnsiConsole.MarkupLine($"[green]Switched to branch:[/] {branch}");
-    OpenTerminal(path, terminal);
+    OpenTerminal(path, terminal, warpMode);
     return 0;
 }
 
@@ -1384,14 +1395,15 @@ bool CheckRemoteBranchExists(string path, string branch)
 // Terminal Launching
 // ============================================================================
 
-void OpenTerminal(string path, string terminal)
+void OpenTerminal(string path, string terminal, string warpMode = "tab")
 {
     if (platform == "macos")
     {
         switch (terminal.ToLower())
         {
             case "warp":
-                Process.Start("open", $"\"warp://action/new_window?path={path}\"");
+                var action = warpMode == "window" ? "new_window" : "new_tab";
+                Process.Start("open", $"\"warp://action/{action}?path={path}\"");
                 break;
             case "iterm":
                 var script = $"tell application \"iTerm\" to create window with default profile command \"cd '{path}' && exec $SHELL\"";
@@ -1408,7 +1420,8 @@ void OpenTerminal(string path, string terminal)
         switch (terminal.ToLower())
         {
             case "warp":
-                var warpUrl = $"warp://action/new_window?path={path.Replace("\\", "/")}";
+                var warpAction = warpMode == "window" ? "new_window" : "new_tab";
+                var warpUrl = $"warp://action/{warpAction}?path={path.Replace("\\", "/")}";
                 Process.Start(new ProcessStartInfo { FileName = warpUrl, UseShellExecute = true });
                 break;
             default:
