@@ -68,6 +68,7 @@ try
     {
         "config" => RunConfig(config),
         "list" => RunList(config, cmdArgs.Skip(1).ToArray()),
+        "remote" or "branches" => RunRemoteBranches(config, cmdArgs.Skip(1).ToArray()),
         "help" or "--help" or "-h" => ShowHelp(),
         _ when cmdArgs.Length >= 2 => RunCreateBranch(config, cmdArgs[0], cmdArgs[1]),
         _ => RunCreateBranchInteractive(config, cmdArgs[0])
@@ -153,11 +154,12 @@ int RunInteractive(BranchConfig config)
         var choice = AnsiConsole.Prompt(
             new SelectionPrompt<string>()
                 .Title("What would you like to do?")
-                .AddChoices("+ Create new working copy", "* Configure", "x Exit"));
+                .AddChoices("+ Create new working copy", "r Browse remote branches", "* Configure", "x Exit"));
 
         return choice switch
         {
             "+ Create new working copy" => RunCreateBranchInteractiveMenu(config),
+            "r Browse remote branches" => RunRemoteBranches(config, Array.Empty<string>()),
             "* Configure" => RunConfig(config),
             _ => 0
         };
@@ -181,6 +183,7 @@ int RunInteractive(BranchConfig config)
         var wc = workingCopies[i];
         var statusColor = wc.Status == "clean" ? "green" : "yellow";
         var remoteStatus = wc.IsMainRepo ? "[grey]-[/]" :
+                          wc.IsTrunkBranch ? "[green]✓[/]" :
                           wc.RemoteBranchExists ? "[green]✓[/]" :
                           "[red]merged[/]";
         var folderStyle = wc.IsMerged ? "grey strikethrough" : "blue";
@@ -209,7 +212,7 @@ int RunInteractive(BranchConfig config)
     var numRange = maxNum > 0 ? $"[cyan]1-{maxNum}[/] Open  " : "";
     var cleanupOption = mergedCount > 0 ? "[cyan]c[/] Cleanup  " : "";
 
-    AnsiConsole.Markup($"{numRange}[cyan]n[/] New  {cleanupOption}[cyan]s[/] Settings  [cyan]x[/] Exit: ");
+    AnsiConsole.Markup($"{numRange}[cyan]n[/] New  [cyan]r[/] Remote  {cleanupOption}[cyan]s[/] Settings  [cyan]x[/] Exit: ");
 
     // Read single key
     while (true)
@@ -236,6 +239,9 @@ int RunInteractive(BranchConfig config)
             case 'n':
                 AnsiConsole.WriteLine("n");
                 return RunCreateBranchInteractiveMenu(config);
+            case 'r':
+                AnsiConsole.WriteLine("r");
+                return RunRemoteBranches(config, Array.Empty<string>());
             case 'c' when mergedCount > 0:
                 AnsiConsole.WriteLine("c");
                 return RunCleanupMerged(config, workingCopies.Where(wc => wc.IsMerged).ToList());
@@ -305,7 +311,8 @@ List<WorkingCopyInfo> GetWorkingCopies(string rootFolder, bool checkRemotes = fa
             LastModified = dir.LastWriteTime,
             RelativeTime = relativeTime,
             RemoteBranchExists = true, // Default to true, check below if requested
-            IsMainRepo = isMainRepo
+            IsMainRepo = isMainRepo,
+            IsTrunkBranch = IsTrunkBranch(branch)
         };
 
         workingCopies.Add(wc);
@@ -950,6 +957,211 @@ int RunList(BranchConfig config, string[] args)
 }
 
 // ============================================================================
+// Remote Branches
+// ============================================================================
+
+int RunRemoteBranches(BranchConfig config, string[] args)
+{
+    if (config.Repositories == null || config.Repositories.Count == 0)
+    {
+        AnsiConsole.MarkupLine("[yellow]No repositories configured. Run 'branch config' first.[/]");
+        return 1;
+    }
+
+    Repository? repo = null;
+
+    // If repo specified, use it; otherwise prompt
+    if (args.Length > 0)
+    {
+        repo = FindRepository(config, args[0]);
+        if (repo == null)
+        {
+            AnsiConsole.MarkupLine($"[red]Repository not found:[/] {args[0]}");
+            SuggestRepositories(config, args[0]);
+            return 1;
+        }
+    }
+    else if (config.Repositories.Count == 1)
+    {
+        repo = config.Repositories[0];
+    }
+    else
+    {
+        var choices = config.Repositories.Select(r => $"{r.ShortName} ({r.DisplayName})").ToList();
+        choices.Add("← Cancel");
+
+        var repoChoice = AnsiConsole.Prompt(
+            new SelectionPrompt<string>()
+                .Title("Select repository:")
+                .AddChoices(choices));
+
+        if (repoChoice == "← Cancel")
+            return 0;
+
+        var shortName = repoChoice.Split(' ')[0];
+        repo = config.Repositories.FirstOrDefault(r => r.ShortName == shortName);
+    }
+
+    if (repo == null)
+        return 1;
+
+    var rootFolder = GetRootFolder(config);
+
+    // Find a local clone to fetch from, or use the remote URL
+    var localRepoPath = FindLocalRepo(config, repo, rootFolder);
+
+    AnsiConsole.WriteLine();
+    AnsiConsole.Write(new Rule($"[cyan]Remote Branches: {repo.ShortName}[/]").RuleStyle("grey"));
+    AnsiConsole.WriteLine();
+
+    List<string> branches = new();
+
+    AnsiConsole.Status()
+        .Spinner(Spinner.Known.Dots)
+        .Start("Fetching remote branches...", ctx =>
+        {
+            if (localRepoPath != null)
+            {
+                // Fetch latest from origin
+                try { RunGit("fetch origin --prune", localRepoPath); } catch { }
+                branches = GetRemoteBranches(localRepoPath);
+            }
+            else
+            {
+                // No local clone, use ls-remote directly
+                branches = GetRemoteBranchesFromUrl(repo.Url ?? "");
+            }
+        });
+
+    if (branches.Count == 0)
+    {
+        AnsiConsole.MarkupLine("[yellow]No remote branches found.[/]");
+        return 1;
+    }
+
+    // Sort branches: trunk branches first, then feature branches alphabetically
+    var trunkBranches = new[] { "master", "main", "develop", "development" };
+    var sortedBranches = branches
+        .OrderByDescending(b => Array.IndexOf(trunkBranches, b) >= 0 ? 1 : 0)
+        .ThenByDescending(b => Array.IndexOf(trunkBranches, b) >= 0 ? Array.IndexOf(trunkBranches, b) : int.MaxValue)
+        .ThenBy(b => b)
+        .ToList();
+
+    sortedBranches.Add("← Cancel");
+
+    AnsiConsole.MarkupLine($"[grey]Found {branches.Count} branches. Type to filter.[/]");
+    AnsiConsole.WriteLine();
+
+    var selectedBranch = AnsiConsole.Prompt(
+        new SelectionPrompt<string>()
+            .Title("Select branch to checkout:")
+            .PageSize(20)
+            .EnableSearch()
+            .SearchPlaceholderText("[grey]Type to search...[/]")
+            .AddChoices(sortedBranches));
+
+    if (selectedBranch == "← Cancel")
+        return 0;
+
+    AnsiConsole.WriteLine();
+    return RunCreateBranch(config, repo.ShortName ?? "", selectedBranch);
+}
+
+string? FindLocalRepo(BranchConfig config, Repository repo, string rootFolder)
+{
+    var repoName = repo.DisplayName?.Split('/').Last() ?? repo.ShortName ?? "";
+
+    // Check exact repo name first, then trunk branch variants
+    var candidateFolders = new List<string> { repoName };
+    foreach (var trunk in new[] { "master", "main", "develop", "development" })
+    {
+        candidateFolders.Add($"{repoName}-{trunk}");
+    }
+
+    foreach (var candidate in candidateFolders)
+    {
+        var localPath = Path.Combine(rootFolder, candidate);
+        if (Directory.Exists(localPath) && Directory.Exists(Path.Combine(localPath, ".git")))
+        {
+            return localPath;
+        }
+    }
+
+    return null;
+}
+
+List<string> GetRemoteBranches(string repoPath)
+{
+    try
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = "git",
+            Arguments = "branch -r",
+            WorkingDirectory = repoPath,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        using var process = Process.Start(psi);
+        var output = process?.StandardOutput.ReadToEnd() ?? "";
+        process?.WaitForExit();
+
+        return output
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(b => b.Trim())
+            .Where(b => !b.Contains("->")) // Skip HEAD -> origin/main
+            .Select(b => b.Replace("origin/", ""))
+            .Where(b => !string.IsNullOrEmpty(b))
+            .ToList();
+    }
+    catch
+    {
+        return new List<string>();
+    }
+}
+
+List<string> GetRemoteBranchesFromUrl(string url)
+{
+    try
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = "git",
+            Arguments = $"ls-remote --heads \"{url}\"",
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        using var process = Process.Start(psi);
+        var output = process?.StandardOutput.ReadToEnd() ?? "";
+        process?.WaitForExit();
+
+        // Format: <sha>\trefs/heads/<branch>
+        return output
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(line =>
+            {
+                var parts = line.Split('\t');
+                if (parts.Length >= 2 && parts[1].StartsWith("refs/heads/"))
+                {
+                    return parts[1].Replace("refs/heads/", "");
+                }
+                return null;
+            })
+            .Where(b => b != null)
+            .Cast<string>()
+            .ToList();
+    }
+    catch
+    {
+        return new List<string>();
+    }
+}
+
+// ============================================================================
 // Configuration
 // ============================================================================
 
@@ -1227,22 +1439,32 @@ string FindCloneSource(BranchConfig config, Repository repo, string rootFolder)
     if (cloneSource == "auto" || cloneSource == "local")
     {
         var repoName = repo.DisplayName?.Split('/').Last() ?? repo.ShortName ?? "";
-        var localPath = Path.Combine(rootFolder, repoName);
 
-        if (Directory.Exists(localPath) && Directory.Exists(Path.Combine(localPath, ".git")))
+        // Check exact repo name first, then trunk branch variants
+        var candidateFolders = new List<string> { repoName };
+        foreach (var trunk in new[] { "master", "main", "develop", "development" })
         {
-            // Verify it's the right repo (check remote URL)
-            var remoteUrl = GetRemoteUrl(localPath);
-            if (remoteUrl != null && (remoteUrl.Contains(repo.DisplayName ?? "") ||
-                                       remoteUrl.Contains(repoName)))
+            candidateFolders.Add($"{repoName}-{trunk}");
+        }
+
+        foreach (var candidate in candidateFolders)
+        {
+            var localPath = Path.Combine(rootFolder, candidate);
+            if (Directory.Exists(localPath) && Directory.Exists(Path.Combine(localPath, ".git")))
             {
-                return localPath;
+                // Verify it's the right repo (check remote URL)
+                var remoteUrl = GetRemoteUrl(localPath);
+                if (remoteUrl != null && (remoteUrl.Contains(repo.DisplayName ?? "") ||
+                                           remoteUrl.Contains(repoName)))
+                {
+                    return localPath;
+                }
             }
         }
 
         if (cloneSource == "local")
         {
-            throw new Exception($"Local source not found for {repo.ShortName}. Expected: {localPath}");
+            throw new Exception($"Local source not found for {repo.ShortName}. Expected: {Path.Combine(rootFolder, repoName)}");
         }
     }
 
@@ -1561,11 +1783,13 @@ int ShowHelp()
     Console.WriteLine("  branch                        Interactive mode");
     Console.WriteLine("  branch <repo> <branch>        Create working copy");
     Console.WriteLine("  branch list [repo]            List working copies");
+    Console.WriteLine("  branch remote [repo]          Browse remote branches (type to search)");
     Console.WriteLine("  branch config                 Configure repositories");
     Console.WriteLine("  branch help                   Show this help");
     AnsiConsole.WriteLine();
     AnsiConsole.MarkupLine("[bold]Examples:[/]");
     AnsiConsole.MarkupLine("  branch voyager feature/phase-4-1-api");
+    AnsiConsole.MarkupLine("  branch remote voyager         # Browse and select from remote branches");
     AnsiConsole.MarkupLine("  branch list");
     AnsiConsole.MarkupLine("  branch list voyager");
     AnsiConsole.WriteLine();
@@ -1585,6 +1809,15 @@ string DetectPlatform()
     if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
         return "macos";
     return "linux";
+}
+
+bool IsTrunkBranch(string branch)
+{
+    var trunkBranches = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "master", "main", "develop", "development"
+    };
+    return trunkBranches.Contains(branch);
 }
 
 // ============================================================================
@@ -1624,5 +1857,6 @@ class WorkingCopyInfo
     public string RelativeTime { get; set; } = "";
     public bool RemoteBranchExists { get; set; } = true;
     public bool IsMainRepo { get; set; } = false; // True for 'voyager', 'profile', etc.
-    public bool IsMerged => !RemoteBranchExists && !IsMainRepo;
+    public bool IsTrunkBranch { get; set; } = false; // True for master, main, develop
+    public bool IsMerged => !RemoteBranchExists && !IsMainRepo && !IsTrunkBranch;
 }

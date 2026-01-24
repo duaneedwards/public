@@ -7,6 +7,7 @@ A cross-platform CLI tool for managing git working copies. Quickly spin up isola
 - **Fast cloning**: Clones from local repos when available, falls back to GitHub
 - **Multi-repo support**: Configure multiple repositories with short aliases
 - **Interactive mode**: TUI for browsing and managing working copies
+- **Remote branch browsing**: List and search remote branches with type-to-filter
 - **Merged branch cleanup**: Detects and offers to clean up working copies for merged branches
 - **Terminal integration**: Opens new working copies in your preferred terminal (Warp, iTerm, Terminal, Windows Terminal)
 - **Cross-platform**: Works on macOS, Windows, and Linux
@@ -67,6 +68,8 @@ branch                                  # Interactive mode
 branch my-project feature/my-feature    # Create working copy
 branch list                             # List all working copies
 branch list my-project                  # List working copies for specific repo
+branch remote                           # Browse remote branches (type to search)
+branch remote my-project                # Browse remote branches for specific repo
 branch config                           # Configure repositories
 branch help                             # Show help
 ```
