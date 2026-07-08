@@ -122,6 +122,7 @@ switch (cmd)
 // ==========================================================================
 (int code, string stdout, string stderr) Gh(params string[] args)
 {
+    const int GhTimeoutMs = 30000; // a hung gh (auth prompt, network stall) must not block the loop
     var psi = new ProcessStartInfo("gh") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
     foreach (var a in args) psi.ArgumentList.Add(a);
     using var p = Process.Start(psi)!;
@@ -129,7 +130,13 @@ switch (cmd)
     // stderr deadlocks when gh fills the stderr buffer while we're blocked on stdout.
     var soTask = p.StandardOutput.ReadToEndAsync();
     var seTask = p.StandardError.ReadToEndAsync();
-    p.WaitForExit();
+    if (!p.WaitForExit(GhTimeoutMs))
+    {
+        // Timed out: kill the tree and return a synthetic failure. Callers treat any
+        // non-zero code as "gh failed" and skip/wait gracefully, so the loop continues.
+        try { p.Kill(entireProcessTree: true); } catch { /* already gone */ }
+        return (124, "", $"gh timed out after {GhTimeoutMs / 1000}s: gh {string.Join(' ', args)}");
+    }
     return (p.ExitCode, soTask.GetAwaiter().GetResult(), seTask.GetAwaiter().GetResult());
 }
 
@@ -154,7 +161,12 @@ JsonObject LoadCache()
 void SaveCache(JsonObject cache, DateTimeOffset now)
 {
     cache["updatedAt"] = now.ToString("u");
-    File.WriteAllText(CachePath, cache.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+    var json = cache.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+    // Atomic write: fill a temp file on the same directory, then rename over the target.
+    // A crash mid-write leaves the old cache intact instead of a truncated/corrupt file.
+    var tmp = CachePath + ".tmp";
+    File.WriteAllText(tmp, json);
+    File.Move(tmp, CachePath, overwrite: true);
 }
 JsonObject? FindEntry(JsonArray prs, string repo, long number) =>
     prs.OfType<JsonObject>().FirstOrDefault(e =>
