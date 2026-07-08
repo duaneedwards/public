@@ -80,8 +80,11 @@ int minTriggerIntervalMin = 2;
 
 // Classification patterns (declared before dispatch because the command handlers
 // below close over them).
+// Match ONLY the real Fair-Usage notice, not a bare "rate limit" mention: CodeRabbit's
+// walkthrough/change-stack summary contains "rate limit" in its help text, which a loose
+// regex false-matched as an active cooldown (voyager #384 spun on this for hours).
 var RateLimitRx = new System.Text.RegularExpressions.Regex(
-    @"rate limit|review limit reached|fair usage", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    @"review limit reached|fair usage|next review available in", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 // Broad — used ONLY for head-anchoring, where a head-SHA containment guard makes
 // loose phrases safe (a walkthrough naming the head sha genuinely covers it).
 var ReviewPhraseRx = new System.Text.RegularExpressions.Regex(
@@ -96,11 +99,17 @@ var FinalReviewRx = new System.Text.RegularExpressions.Regex(
 var CleanRx = new System.Text.RegularExpressions.Regex(
     @"no actionable comments were generated", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 // CodeRabbit's response to an INCREMENTAL `@coderabbitai review` when the head's diff
-// is unchanged since its last review (e.g. after a content-neutral rebase): it skips
-// with "no new commits to review". Incremental will keep being a no-op — only a FULL
-// review re-examines the whole diff and yields a fresh verdict at the current head.
+// is unchanged since its last review (e.g. after a content-neutral rebase). Two phrasings
+// mean the same no-op: an explicit "review skipped / no new commits", OR "Review finished"
+// with the note "does not re-review already reviewed commits". Incremental keeps being a
+// no-op — only a FULL review re-examines the whole diff and yields a verdict.
 var ReviewSkippedRx = new System.Text.RegularExpressions.Regex(
-    @"review skipped|no new commits to review", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    @"review skipped|no new commits to review|does not re-review already reviewed", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+// A FULL review completing ("Full review finished"): `@coderabbitai full review` re-examines
+// the ENTIRE diff, so this ack means the current head's content has been reviewed even when
+// CodeRabbit won't emit a fresh head-anchored review object for already-reviewed content.
+var FullReviewFinishedRx = new System.Text.RegularExpressions.Regex(
+    @"full review finished", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 var RetryHoursRx = new System.Text.RegularExpressions.Regex(
     @"available in:?[^\n]*?(\d+)\s*hour", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 var RetryMinutesRx = new System.Text.RegularExpressions.Regex(
@@ -238,13 +247,42 @@ JsonObject? FindEntry(JsonArray prs, string repo, long number) =>
     if (reviewAtHead)
         return (cleanAtHead ? "clean" : "has-comments", headSha, null, "", false);
 
+    // Completed FULL review: `@coderabbitai full review` re-examines the entire diff, so a
+    // "full review finished" ack means the head IS reviewed even though CodeRabbit won't emit
+    // a fresh head-anchored object for already-reviewed content. Terminal (stop triggering)
+    // when a prior real review exists and the full-finished is the newest meaningful signal.
+    var latestFull = signals.Where(s => FullReviewFinishedRx.IsMatch(s.Body)).OrderByDescending(s => s.Ts).FirstOrDefault();
+    bool priorReview = signals.Any(s => !RateLimitRx.IsMatch(s.Body) && (FinalReviewRx.IsMatch(s.Body) || CleanRx.IsMatch(s.Body)));
+    if (latestFull != null && priorReview
+        && latestFull.Ts >= reviewTs && latestFull.Ts >= skipTs && (latestRate == null || latestFull.Ts >= latestRate.Ts))
+    {
+        // CURRENT-HEAD GUARD (CI-start anchor): the ack must post-date when the head SHA's CI
+        // started. GitHub stamps check-run started_at / status created_at at push time, so
+        // (unlike commit.committer.date) it can't be back-dated by a date-preserving rebase
+        // or forged GIT_COMMITTER_DATE. Fail-closed if no CI timestamp exists.
+        DateTimeOffset headCiStart = DateTimeOffset.MaxValue;
+        var (crc, cro, _) = Gh("api", $"repos/{repo}/commits/{headSha}/check-runs", "--jq", "[.check_runs[].started_at] | map(select(. != null)) | min // empty");
+        if (crc == 0 && DateTimeOffset.TryParse(cro.Trim(), out var crStart)) headCiStart = crStart;
+        else
+        {
+            var (stc, sto, _) = Gh("api", $"repos/{repo}/commits/{headSha}/status", "--jq", "[.statuses[].created_at] | map(select(. != null)) | min // empty");
+            if (stc == 0 && DateTimeOffset.TryParse(sto.Trim(), out var stStart)) headCiStart = stStart;
+        }
+        // STRICT >: second-granularity timestamps mean a same-second old-ack / new-head
+        // race would false-accept under >=. And return "has-comments" (not "clean"): a
+        // clean verdict for the head is only trustworthy via the reviewAtHead/cleanAtHead
+        // path above; an unrelated older "no actionable" signal must not imply clean here.
+        if (latestFull.Ts > headCiStart)
+            return ("has-comments", headSha, null, "full review finished (already-reviewed head)", false);
+    }
+
     // Skip-stuck (needsFull): a "review skipped / no new commits" notice means THIS head's
     // diff is unchanged since the last review, so incremental is a permanent no-op. That
     // stays true through later RATE-LIMITS (a rate-limit is not a review) — only an actual
     // review (in-progress or final) NEWER than the skip clears it. So compare the skip
     // against the newest REVIEW-ish signal, ignoring rate-limit notices. Computed up front
     // and threaded through every return so a rate-limited PR still escalates when it fires.
-    var latestReviewish = signals.Where(s => ReviewPhraseRx.IsMatch(s.Body)
+    var latestReviewish = signals.Where(s => (ReviewPhraseRx.IsMatch(s.Body) || FullReviewFinishedRx.IsMatch(s.Body))
             && !ReviewSkippedRx.IsMatch(s.Body) && !RateLimitRx.IsMatch(s.Body))
         .OrderByDescending(s => s.Ts).FirstOrDefault();
     var reviewishTs = latestReviewish != null ? latestReviewish.Ts : DateTimeOffset.MinValue;
