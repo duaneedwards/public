@@ -30,6 +30,19 @@ A custom statusline script that displays useful context at a glance: context win
 
 [View documentation](./statusline-tool/README.md)
 
+### [coderabbit-queue](./coderabbit-queue/)
+
+A cheap, non-LLM poller that drives every open PR on your GitHub account to a fresh CodeRabbit review, patiently working around CodeRabbit's Fair-Usage rate limit.
+
+**Features:**
+- Account-wide PR discovery, with a per-account cooldown model that never wastes the review "trickle"
+- Fair round-robin so no PR starves; bumpable priority queue
+- Auto-escalates to a full review when an incremental one is skipped ("no new commits")
+- Head-anchored review detection; never merges
+- Runs as a Claude Code skill or standalone (cron/tmux/nohup) — needs only `gh`, no AI
+
+[View documentation](./coderabbit-queue/README.md)
+
 ## Installation
 
 Each tool has its own installation instructions. Generally, you'll copy files to your `~/.claude/` directory structure:
