@@ -1,35 +1,53 @@
 # Enhanced Statusline for Claude Code
 
-A custom statusline script that displays context usage, rate limits, budget tracking, and git status at a glance.
+A custom statusline that displays context usage, model, rate limits, budget tracking, and git status at a glance. Ships both a **bash** version (`statusline-command.sh`, macOS/Linux) and a **PowerShell** version (`statusline.ps1`, Windows).
 
 ## What it shows
 
 ```
-45% 90K | 4% 4h10 ▼0h37/16% 3d18 ▼2d02 | my-project | main synced
+45% 90K | O4.8 +1M | 4% 4h10 ▼0h37/16% 3d18 ▼2d02/o22% 3d18 $60/81 | my-project | main synced
 ```
 
 | Section | Meaning |
 |---------|---------|
 | `45% 90K` | Context used (45%), total tokens (90K) |
+| `O4.8 +1M` | Model (abbreviated), `+1M` = 1M-context variant |
 | `4% 4h10 ▼0h37` | 5-hour session: 4% used, 4h10 until reset, 37min under budget |
 | `16% 3d18 ▼2d02` | 7-day limit: 16% used, 3d18h until reset, 2d02h under budget |
+| `o22% 3d18` | 7-day **Opus** bucket (only on plans that expose a separate Opus cap) |
+| `$60/81` | Extra-usage / pay-as-you-go credits: $60 used of $81 (only when enabled) |
 | `my-project` | Current folder name |
 | `main synced` | Git branch and sync status |
+
+> **Windows note:** the PowerShell version is feature-identical but uses ASCII budget-delta
+> markers — `v` (under budget) and `^` (over budget) — because the Windows console does not
+> render the `▼`/`▲` triangle glyphs reliably.
 
 ### Context Usage
 - **Green** - Under 50% used
 - **Yellow** - 50-74% used
 - **Orange** - 75%+ used (warning)
 
+### Model
+The model's display name, abbreviated to `<Tier><version>` (e.g. `Opus 4.8` → `O4.8`,
+`Sonnet 4.6` → `S4.6`), with `+1M` appended for the 1M-context variant. Falls back to the
+raw name if it doesn't match that shape.
+
 ### Usage Limits
 - **5-hour session limit** - Rolling window, resets continuously
 - **7-day weekly limit** - Rolling window for sustained usage
+- **7-day Opus bucket** (`o` prefix) - a separate Opus-only cap, shown only on plans that
+  expose one (rolls into the main weekly limit otherwise)
+- **Extra usage** (`$used/limit`) - pay-as-you-go credit pool, shown only when enabled;
+  colored by how much of the monthly cap is consumed
 - Percentages show how much of each limit you've consumed
 
 ### Budget Delta
 The delta shows if you're pacing ahead or behind your expected usage rate:
-- `▼` (green) = **Under budget** - Using less than expected for elapsed time
-- `▲` (red) = **Over budget** - Using more than expected for elapsed time
+- `▼` (bash) / `v` (PowerShell), green = **Under budget** - using less than expected for elapsed time
+- `▲` (bash) / `^` (PowerShell), red = **Over budget** - using more than expected for elapsed time
+
+Small deltas (under ~1%) are omitted.
 
 Example: If 50% of your 5-hour window has elapsed but you've only used 25%, you're under budget by the equivalent time shown.
 
@@ -45,13 +63,33 @@ Example: If 50% of your 5-hour window has elapsed but you've only used 25%, you'
 
 ## Requirements
 
-- **macOS** (uses macOS Keychain for OAuth token)
+**macOS / Linux (`statusline-command.sh`):**
 - `jq` - JSON processor (`brew install jq`)
 - `curl` - For API calls (pre-installed)
 - `git` - For branch/sync status
 - Bash shell
+- OAuth token: read from the **macOS Keychain** (usage-limit segments; degrade gracefully if absent)
 
-## Installation
+**Windows (`statusline.ps1`):**
+- Windows PowerShell 5.1+ (or PowerShell 7+)
+- `git` in `PATH`
+- OAuth token: read from `%USERPROFILE%\.claude\.credentials.json` (usage-limit segments)
+
+## Installation (Windows)
+
+Copy `statusline.ps1` to `%USERPROFILE%\.claude\lib\statusline.ps1` and add to
+`%USERPROFILE%\.claude\settings.json`:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\\.claude\\lib\\statusline.ps1"
+  }
+}
+```
+
+## Installation (macOS / Linux)
 
 ### 1. Copy the script
 
@@ -146,7 +184,8 @@ elif [ "$session_pct_int" -ge 50 ]; then  # Yellow
 - Verify jq is installed (`which jq`)
 
 **Usage limits not showing:**
-- This feature requires macOS (uses Keychain)
+- Requires readable OAuth credentials: the macOS Keychain (bash) or
+  `%USERPROFILE%\.claude\.credentials.json` (Windows)
 - Check you're logged into Claude Code
 - Try clearing cache: `rm ~/.claude/statusline-cache.json`
 
