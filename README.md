@@ -43,6 +43,19 @@ A cheap, non-LLM poller that drives every open PR on your GitHub account to a fr
 
 [View documentation](./coderabbit-queue/README.md)
 
+### [warp-claude-sessions](./warp-claude-sessions/)
+
+Snapshot your Warp terminal window and restore it after a reboot with every Claude Code tab resuming its exact session (`claude -r`), in the same tab order.
+
+**Features:**
+- Event-driven session registry via SessionStart/SessionEnd hooks - no daemon, no polling
+- True on-screen tab order read from Warp's state DB; plain shell tabs restored too
+- Session titles and permission modes recovered from transcripts
+- One-prompt bootstrap for new machines
+- Cross-platform (macOS, Windows) in a single .NET codebase
+
+[View documentation](./warp-claude-sessions/README.md)
+
 ## Installation
 
 Each tool has its own installation instructions. Generally, you'll copy files to your `~/.claude/` directory structure:
