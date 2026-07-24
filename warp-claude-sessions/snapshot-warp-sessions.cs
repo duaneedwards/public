@@ -65,6 +65,11 @@ string[] dbCandidates = isWindows
 string[] launchDirCandidates = isWindows
     ? new[]
     {
+        // Per Warp docs the Windows launch-config dir is %APPDATA%\warp\Warp\data\launch_configurations
+        // (Roaming, note the \data segment). Verified on a Windows 11 install 2026-07.
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "warp", "Warp", "data", "launch_configurations"),
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "warp", "Warp", "data", "launch_configurations"),
+        // Older/alternate layouts without the \data segment, kept as fallbacks.
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "warp", "Warp", "launch_configurations"),
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "warp", "Warp", "launch_configurations"),
     }
