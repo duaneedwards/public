@@ -1,12 +1,15 @@
 #!/bin/bash
 
-# Claude Code Enhanced Statusline
-# Shows: Context usage | Usage limits with budget delta | Folder | Git status
+# Claude Code Enhanced Statusline (macOS / Linux)
+# Shows: Context usage | Model | Usage limits with budget delta | Folder | Git status
 #
 # Features:
 #   - Context usage % and token count (color-coded warnings)
+#   - Abbreviated model name (e.g. "O4.8 +1M")
 #   - 5-hour session and 7-day usage limits with reset times
-#   - Budget delta: ▼ (under budget) or ▲ (over budget)
+#   - Separate 7-day Opus bucket (when the plan exposes it)
+#   - Extra-usage / pay-as-you-go credit pool ($used/limit) when enabled
+#   - Budget delta: ▼ (under budget / ahead of pace) or ▲ (over budget)
 #   - Git branch and sync status
 #
 # Install:
@@ -19,6 +22,9 @@
 #          "command": "/bin/bash ~/.claude/lib/statusline-command.sh"
 #        }
 #      }
+#
+# Requires: jq, curl, git. Usage-limit segments need Claude Code's OAuth
+# credentials in the macOS Keychain (they degrade gracefully if unavailable).
 
 # Read JSON input from stdin
 input=$(cat)
@@ -36,6 +42,7 @@ YELLOW="\033[33m"
 RED="\033[31m"
 ORANGE="\033[38;5;208m"
 GRAY="\033[90m"
+MAGENTA="\033[35m"
 
 # === Extract context window data ===
 used_pct=$(echo "$input" | jq -r '.context_window.used_percentage // 0' | cut -d. -f1)
@@ -66,10 +73,26 @@ fi
 current_dir=$(echo "$input" | jq -r '.workspace.current_dir')
 folder_name=$(basename "$current_dir")
 
-# === Usage API Functions (macOS only) ===
+# === Model info ===
+# Abbreviate the display name: "Opus 4.8 (1M context)" -> "O4.8 +1M",
+# "Sonnet 4.6" -> "S4.6", "Haiku 4.5" -> "H4.5". Falls back to the raw
+# name if it doesn't match the "<Tier> <version>" shape.
+model_raw=$(echo "$input" | jq -r '.model.display_name // empty')
+model_name="$model_raw"
+if [ -n "$model_raw" ]; then
+    tier=$(echo "$model_raw" | sed -n 's/^\([A-Za-z]\).*/\1/p')
+    ver=$(echo "$model_raw" | sed -n 's/^[A-Za-z]* *\([0-9][0-9.]*\).*/\1/p')
+    if [ -n "$tier" ] && [ -n "$ver" ]; then
+        model_name="${tier}${ver}"
+        case "$model_raw" in
+            *1M*) model_name="${model_name} +1M" ;;
+        esac
+    fi
+fi
+
+# === Usage API Functions ===
 
 get_oauth_token() {
-    # Read OAuth token from macOS Keychain where Claude Code stores credentials
     security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null | jq -r '.claudeAiOauth.accessToken // empty'
 }
 
@@ -227,6 +250,24 @@ format_delta() {
     fi
 }
 
+# Pick a threshold color for a 0-100 utilization integer
+pct_color() {
+    local pct=$1
+    if [ "$pct" -ge 80 ]; then
+        echo "$RED"
+    elif [ "$pct" -ge 50 ]; then
+        echo "$YELLOW"
+    else
+        echo "$GRAY"
+    fi
+}
+
+# Format a cents amount as compact USD: 8100 -> 81, 6007 -> 60, 150000 -> 1.5k
+# (the usage API reports extra_usage credits in cents)
+format_usd() {
+    awk -v c="$1" 'BEGIN { d = c / 100; if (d >= 1000) printf "%.1fk", d / 1000; else printf "%.0f", d }'
+}
+
 # === Build usage limits string ===
 usage_str=""
 usage_data=$(get_usage_data 2>/dev/null)
@@ -237,46 +278,70 @@ if [ -n "$usage_data" ] && [ "$usage_data" != "null" ]; then
     session_reset=$(echo "$usage_data" | jq -r '.five_hour.resets_at // empty' 2>/dev/null)
 
     # Parse weekly (7-day rolling) limit
-    daily_pct=$(echo "$usage_data" | jq -r '.seven_day.utilization // empty' 2>/dev/null)
-    daily_reset=$(echo "$usage_data" | jq -r '.seven_day.resets_at // empty' 2>/dev/null)
+    weekly_pct=$(echo "$usage_data" | jq -r '.seven_day.utilization // empty' 2>/dev/null)
+    weekly_reset=$(echo "$usage_data" | jq -r '.seven_day.resets_at // empty' 2>/dev/null)
+
+    # Parse weekly Opus limit (separate Opus-only bucket; null on plans where Opus
+    # consumption rolls into the main seven_day bucket - rendered only when present)
+    opus_pct=$(echo "$usage_data" | jq -r '.seven_day_opus.utilization // empty' 2>/dev/null)
+    opus_reset=$(echo "$usage_data" | jq -r '.seven_day_opus.resets_at // empty' 2>/dev/null)
+
+    # Parse extra usage (pay-as-you-go monthly credit pool)
+    extra_enabled=$(echo "$usage_data" | jq -r '.extra_usage.is_enabled // false' 2>/dev/null)
+    extra_pct=$(echo "$usage_data" | jq -r '.extra_usage.utilization // empty' 2>/dev/null)
+    extra_used=$(echo "$usage_data" | jq -r '.extra_usage.used_credits // empty' 2>/dev/null)
+    extra_limit=$(echo "$usage_data" | jq -r '.extra_usage.monthly_limit // empty' 2>/dev/null)
 
     if [ -n "$session_pct" ] && [ -n "$session_reset" ]; then
         session_pct_int=${session_pct%.*}
         session_time=$(format_time_hours_mins "$session_reset")
         session_delta=$(calc_delta "$session_pct_int" "$session_reset" 5)
         session_delta_str=$(format_delta "$session_delta" 5)
-
-        # Color based on usage
-        if [ "$session_pct_int" -ge 80 ]; then
-            session_color="$RED"
-        elif [ "$session_pct_int" -ge 50 ]; then
-            session_color="$YELLOW"
-        else
-            session_color="$GRAY"
-        fi
+        session_color=$(pct_color "$session_pct_int")
 
         usage_str="${session_color}${session_pct_int}%${RESET}${DIM} ${session_time}${RESET}${session_delta_str}"
     fi
 
-    if [ -n "$daily_pct" ] && [ -n "$daily_reset" ]; then
-        daily_pct_int=${daily_pct%.*}
-        daily_time=$(format_time_days_hours "$daily_reset")
-        daily_delta=$(calc_delta "$daily_pct_int" "$daily_reset" 168)  # 7 days = 168 hours
-        daily_delta_str=$(format_delta "$daily_delta" 168)
-
-        # Color based on usage
-        if [ "$daily_pct_int" -ge 80 ]; then
-            daily_color="$RED"
-        elif [ "$daily_pct_int" -ge 50 ]; then
-            daily_color="$YELLOW"
-        else
-            daily_color="$GRAY"
-        fi
+    if [ -n "$weekly_pct" ] && [ -n "$weekly_reset" ]; then
+        weekly_pct_int=${weekly_pct%.*}
+        weekly_time=$(format_time_days_hours "$weekly_reset")
+        weekly_delta=$(calc_delta "$weekly_pct_int" "$weekly_reset" 168)  # 7 days = 168 hours
+        weekly_delta_str=$(format_delta "$weekly_delta" 168)
+        weekly_color=$(pct_color "$weekly_pct_int")
 
         if [ -n "$usage_str" ]; then
-            usage_str="${usage_str}${DIM}/${RESET}${daily_color}${daily_pct_int}%${RESET}${DIM} ${daily_time}${RESET}${daily_delta_str}"
+            usage_str="${usage_str}${DIM}/${RESET}${weekly_color}${weekly_pct_int}%${RESET}${DIM} ${weekly_time}${RESET}${weekly_delta_str}"
         else
-            usage_str="${daily_color}${daily_pct_int}%${RESET}${DIM} ${daily_time}${RESET}${daily_delta_str}"
+            usage_str="${weekly_color}${weekly_pct_int}%${RESET}${DIM} ${weekly_time}${RESET}${weekly_delta_str}"
+        fi
+    fi
+
+    # Weekly Opus bucket (prefixed with dim "o" to distinguish from the all-models weekly)
+    if [ -n "$opus_pct" ] && [ "$opus_pct" != "null" ] && [ -n "$opus_reset" ]; then
+        opus_pct_int=${opus_pct%.*}
+        opus_time=$(format_time_days_hours "$opus_reset")
+        opus_delta=$(calc_delta "$opus_pct_int" "$opus_reset" 168)
+        opus_delta_str=$(format_delta "$opus_delta" 168)
+        opus_color=$(pct_color "$opus_pct_int")
+
+        if [ -n "$usage_str" ]; then
+            usage_str="${usage_str}${DIM}/o${RESET}${opus_color}${opus_pct_int}%${RESET}${DIM} ${opus_time}${RESET}${opus_delta_str}"
+        else
+            usage_str="${DIM}o${RESET}${opus_color}${opus_pct_int}%${RESET}${DIM} ${opus_time}${RESET}${opus_delta_str}"
+        fi
+    fi
+
+    # Extra-usage credits (pay-as-you-go): dollars used / monthly limit, e.g. $6.0k/8.1k
+    # Colored by % of the cap consumed; no reset window (it's a monthly pool).
+    if [ "$extra_enabled" = "true" ] && [ -n "$extra_used" ] && [ -n "$extra_limit" ]; then
+        extra_pct_int=${extra_pct%.*}
+        extra_color=$(pct_color "${extra_pct_int:-0}")
+        extra_disp="$(format_usd "$extra_used")/$(format_usd "$extra_limit")"
+
+        if [ -n "$usage_str" ]; then
+            usage_str="${usage_str}${DIM} \$${RESET}${extra_color}${extra_disp}${RESET}"
+        else
+            usage_str="${DIM}\$${RESET}${extra_color}${extra_disp}${RESET}"
         fi
     fi
 fi
@@ -321,12 +386,17 @@ else
 fi
 
 # === Build output ===
-# Format: ctx_used% tokens | session%/daily% times deltas | folder | branch status
+# Format: ctx_used% tokens | model | session%/weekly%[/oOpus%][ $extra%] times deltas | folder | branch status
 
 output=""
 
 # Context usage
 output="${ctx_color}${used_pct}%${RESET}${DIM} $(format_tokens $total_tokens)${RESET}"
+
+# Model
+if [ -n "$model_name" ]; then
+    output="${output} ${DIM}|${RESET} ${MAGENTA}${model_name}${RESET}"
+fi
 
 # Usage limits (if available)
 if [ -n "$usage_str" ]; then
