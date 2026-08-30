@@ -56,6 +56,18 @@ Snapshot your Warp terminal window and restore it after a reboot with every Clau
 
 [View documentation](./warp-claude-sessions/README.md)
 
+### [agents-md-review](./agents-md-review/)
+
+A prompt that puts your global `CLAUDE.md` / `AGENTS.md` on trial: adversarial, line by line, delete as the default verdict.
+
+**Features:**
+- Six tests every line must pass (earned, not enforcement, not obvious, not reference, not project-specific, survives its own advice)
+- KEEP / CUT / MOVE table with a named destination for every MOVE (hook, skill, config doc, project file)
+- Drafts the glossary most instruction files are missing
+- Returns the rewritten file in full plus the risky cuts to watch for a month
+
+[View documentation](./agents-md-review/README.md)
+
 ## Installation
 
 Each tool has its own installation instructions. Generally, you'll copy files to your `~/.claude/` directory structure:
